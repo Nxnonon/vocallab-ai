@@ -1,10 +1,16 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useLanguage } from "@/lib/i18n/LanguageContext";
 import { renderAudio, downloadAudioBlob } from "@/lib/audio/exporter";
 import { getAudioMixer } from "@/lib/audio/mixer";
 import { PresetConfig, MacroSettings } from "@/lib/audio/presets";
+import {
+  DAILY_FREE_QUOTA,
+  QuotaStatus,
+  getDailyExportQuota,
+  incrementDailyExportQuota,
+} from "@/lib/audio/quota";
 import {
   X,
   Download,
@@ -54,16 +60,33 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   const [bitDepth, setBitDepth] = useState<16 | 24>(16);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  // Daily Quota State
+  const [quota, setQuota] = useState<QuotaStatus>(() => getDailyExportQuota(isPro));
+  const [hasConsumedQuota, setHasConsumedQuota] = useState(false);
+
+  useEffect(() => {
+    if (isOpen) {
+      setQuota(getDailyExportQuota(isPro));
+      setHasConsumedQuota(false);
+      setErrorMsg(null);
+    }
+  }, [isOpen, isPro]);
+
   const currentVocal = vocalBuffer || (typeof window !== "undefined" ? getAudioMixer().getVocalBuffer() : null);
   const currentBeat = beatBuffer || (typeof window !== "undefined" ? getAudioMixer().getBeatBuffer() : null);
 
   if (!isOpen) return null;
 
   const handleStartRender = async () => {
+    if (!isPro && quota.isExceeded) {
+      setErrorMsg(t.exportModal.dailyQuotaExceeded);
+      return;
+    }
     try {
       setIsRendering(true);
       setErrorMsg(null);
       setRenderProgress(10);
+      setHasConsumedQuota(false);
 
       // 1. Render Master (will use uploaded files or fallback to demo stems if none uploaded)
       const masterResult = await renderAudio({
@@ -118,12 +141,22 @@ export const ExportModal: React.FC<ExportModalProps> = ({
 
   const handleDownloadMaster = () => {
     if (!masterBlob) return;
+    if (!isPro && !hasConsumedQuota) {
+      const updated = incrementDailyExportQuota(isPro);
+      setQuota(updated);
+      setHasConsumedQuota(true);
+    }
     const filename = `VocalLab_${preset.id}_Master_${bitDepth}bit.wav`;
     downloadAudioBlob(masterBlob, filename);
   };
 
   const handleDownloadStem = () => {
     if (!stemBlob) return;
+    if (!isPro && !hasConsumedQuota) {
+      const updated = incrementDailyExportQuota(isPro);
+      setQuota(updated);
+      setHasConsumedQuota(true);
+    }
     const filename = `VocalLab_${preset.id}_VocalStem_${bitDepth}bit.wav`;
     downloadAudioBlob(stemBlob, filename);
   };
@@ -193,33 +226,74 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           </div>
         </div>
 
-        {/* Plan Limit / Safeguard Info */}
-        <div className="p-3 rounded-xl bg-zinc-950/80 border border-zinc-800/80 space-y-1.5 text-xs">
-          <div className="flex items-center gap-2 text-zinc-300">
-            <ShieldCheck className="w-4 h-4 text-emerald-400" />
-            <span className="font-semibold">0 dBFS Master Peak Limiter active</span>
+        {/* Plan Limit / Daily Quota Info */}
+        <div className="p-3.5 rounded-xl bg-zinc-950/80 border border-zinc-800/80 space-y-2 text-xs">
+          <div className="flex items-center justify-between text-zinc-300">
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-emerald-400" />
+              <span className="font-semibold">0 dBFS Master Peak Limiter active</span>
+            </div>
+            <span className="text-[10px] text-zinc-500 font-mono">Full Song Render</span>
           </div>
 
           {isPro ? (
-            <div className="flex items-center gap-2 text-amber-300 text-[11px] pt-1">
-              <Crown className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-              <span>{t.exportModal.proFullLength}</span>
+            <div className="flex items-center justify-between text-amber-300 text-[11px] pt-1.5 border-t border-zinc-800/60">
+              <div className="flex items-center gap-1.5">
+                <Crown className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                <span>{t.exportModal.proFullLength}</span>
+              </div>
+              <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-bold text-[10px] border border-amber-500/30">
+                PRO UNLIMITED
+              </span>
             </div>
           ) : (
-            <div className="flex items-start justify-between gap-2 text-zinc-400 text-[11px] pt-1">
-              <div className="flex items-start gap-1.5">
-                <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
-                <span>{t.exportModal.freeLimitNote}</span>
+            <div className="space-y-2 pt-1.5 border-t border-zinc-800/60">
+              <div className="flex items-center justify-between">
+                <span className="text-zinc-400 text-[11px]">
+                  {t.exportModal.dailyQuotaLabel}:
+                </span>
+                <span
+                  className={`font-mono font-bold text-xs px-2 py-0.5 rounded ${
+                    quota.remaining > 0
+                      ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                      : "bg-rose-500/20 text-rose-300 border border-rose-500/30"
+                  }`}
+                >
+                  {quota.remaining}/{DAILY_FREE_QUOTA} {t.exportModal.dailyQuotaUnit}
+                </span>
               </div>
-              <button
-                onClick={() => {
-                  onClose();
-                  onOpenProModal();
-                }}
-                className="text-violet-400 font-bold hover:underline shrink-0"
-              >
-                PRO
-              </button>
+
+              {quota.isExceeded ? (
+                <div className="p-3 rounded-xl bg-rose-950/60 border border-rose-800/80 space-y-2.5">
+                  <div className="flex items-start gap-2 text-rose-300 text-[11px] leading-relaxed">
+                    <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                    <span>{t.exportModal.dailyQuotaExceeded}</span>
+                  </div>
+                  <button
+                    onClick={() => {
+                      onClose();
+                      onOpenProModal();
+                    }}
+                    className="w-full py-2 rounded-lg bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-400 hover:to-yellow-400 text-black font-extrabold text-xs flex items-center justify-center gap-1.5 shadow-lg shadow-amber-500/20 transition-all hover:scale-[1.01] active:scale-[0.99]"
+                  >
+                    <Crown className="w-4 h-4 fill-current" />
+                    <span>{t.exportModal.upgradeToPro}</span>
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between text-[11px] text-zinc-400">
+                  <span>{t.exportModal.freeLimitNote}</span>
+                  <button
+                    onClick={() => {
+                      onClose();
+                      onOpenProModal();
+                    }}
+                    className="text-violet-400 font-bold hover:underline shrink-0 ml-2"
+                  >
+                    PRO
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -258,12 +332,29 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           <div className="space-y-3 pt-2">
             <div className="p-3 rounded-xl bg-emerald-950/40 border border-emerald-500/30 flex items-center gap-2 text-emerald-300 text-xs font-semibold">
               <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-              <span>{t.exportModal.completeStatus} ({renderDuration.toFixed(1)}s rendered)</span>
+              <span>
+                {t.exportModal.completeStatus} ({renderDuration.toFixed(1)}s rendered)
+              </span>
             </div>
+
+            {/* Quota indicator above download buttons */}
+            {!isPro && (
+              <div className="flex items-center justify-between px-3 py-2 rounded-xl bg-zinc-950/60 border border-zinc-800 text-xs">
+                <span className="text-zinc-400">{t.exportModal.dailyQuotaLabel}:</span>
+                <span
+                  className={`font-mono font-bold ${
+                    quota.remaining > 0 ? "text-emerald-400" : "text-rose-400"
+                  }`}
+                >
+                  {quota.remaining}/{DAILY_FREE_QUOTA} {t.exportModal.dailyQuotaUnit}
+                </span>
+              </div>
+            )}
 
             <button
               onClick={handleDownloadMaster}
-              className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-bold bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white shadow-lg shadow-violet-600/30 transition-all hover:scale-[1.02] active:scale-[0.98]"
+              disabled={!isPro && quota.isExceeded && !hasConsumedQuota}
+              className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-bold bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white shadow-lg shadow-violet-600/30 transition-all hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none"
             >
               <Download className="w-4 h-4" />
               <span>{t.exportModal.downloadWav}</span>
@@ -272,7 +363,8 @@ export const ExportModal: React.FC<ExportModalProps> = ({
             {stemBlob && (
               <button
                 onClick={handleDownloadStem}
-                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-semibold bg-zinc-800 hover:bg-zinc-700 text-zinc-200 transition-colors"
+                disabled={!isPro && quota.isExceeded && !hasConsumedQuota}
+                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-semibold bg-zinc-800 hover:bg-zinc-700 text-zinc-200 transition-colors disabled:opacity-50 disabled:pointer-events-none"
               >
                 <FileAudio className="w-3.5 h-3.5 text-violet-400" />
                 <span>{t.exportModal.downloadStem}</span>
@@ -282,8 +374,12 @@ export const ExportModal: React.FC<ExportModalProps> = ({
         ) : (
           <button
             onClick={handleStartRender}
-            disabled={isRendering || (!currentVocal && !currentBeat)}
-            className="w-full flex items-center justify-center gap-2 py-3.5 rounded-xl text-sm font-bold bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-500 hover:to-fuchsia-500 text-white shadow-lg shadow-violet-600/30 transition-all hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:hover:scale-100"
+            disabled={
+              isRendering ||
+              (!currentVocal && !currentBeat) ||
+              (!isPro && quota.isExceeded)
+            }
+            className="w-full flex items-center justify-center gap-2 py-3.5 rounded-xl text-sm font-bold bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-500 hover:to-fuchsia-500 text-white shadow-lg shadow-violet-600/30 transition-all hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:hover:scale-100 disabled:cursor-not-allowed"
           >
             {isRendering ? (
               <>

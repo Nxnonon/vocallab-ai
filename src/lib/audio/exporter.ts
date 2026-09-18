@@ -86,8 +86,8 @@ export async function renderAudio(options: RenderOptions): Promise<{
   const offsetVocalTail = effVocal ? vDur + Math.max(0, vocalOffset) : 0;
   const rawTotalDuration = Math.max(vDur, bDur, offsetVocalTail, 1.0);
 
-  // Free tier limit: first 30 seconds
-  const renderDuration = isPro ? rawTotalDuration : Math.min(rawTotalDuration, 30.0);
+  // Full track rendering for all users (daily quota tracking handled at application level)
+  const renderDuration = rawTotalDuration;
   const totalFrames = Math.max(1, Math.floor(renderDuration * sampleRate));
 
   // Create Offline Audio Context
